@@ -47,12 +47,6 @@
 #define SIEVE_BITS_MASK (BITS_PER_WORD + MAX_BIT_INDEX)
 #define SIEVE_WORD_MASK ~uint64_t(SIEVE_BITS_MASK)
 
-enum class Parallelization : char
-{
-    threads,
-    blocks
-};
-
 // We have to define this ourselves, as we're not doing C++23 (yet)
 template<class TEnum>
 constexpr auto to_underlying(TEnum enumValue)  

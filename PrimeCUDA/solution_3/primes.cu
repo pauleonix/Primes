@@ -11,44 +11,6 @@
 
 using namespace std::chrono;
 
-__global__ void initialize_buffer(uint64_t blockSize, uint64_t wordCount, sieve_t *sieve)
-{
-    const uint64_t startIndex = uint64_t(blockIdx.x) * blockSize;
-    // Don't initialize beyond the end of the buffer
-    const uint64_t endIndex = ullmin(startIndex + blockSize, wordCount);
-
-    // Set all block words to all 1s
-    for (uint64_t index = startIndex; index < endIndex; index++)
-        sieve[index] = MAX_WORD_VALUE;
-}
-
-__global__ void unmark_multiples_threads(uint32_t primeCount, uint32_t *primes, uint64_t halfSize, uint32_t sizeSqrt, sieve_t *sieve)
-{
-    // Iterate over primes in blocks
-    
-    for (uint32_t basePrimeIndex = 0; basePrimeIndex < primeCount; basePrimeIndex += blockDim.x)
-    {
-        __syncthreads();
-
-        // Iterate over the primes in shared memory
-        for (uint32_t i = 0; i < blockDim.x && basePrimeIndex + i < primeCount; ++i)
-        {
-            const uint32_t prime = primes[i];
-            const uint64_t primeSquared = uint64_t(prime) * prime;
-            //printf("Marking %d\n", prime);
-            uint64_t firstUnmarked = primeSquared > sizeSqrt ? primeSquared : ((sizeSqrt / prime + 1) * prime);
-            if (!(firstUnmarked & 1))
-                firstUnmarked += prime;
-
-            // Start with multiples of the current prime in a way that consecutive threads work on consecutive multiples
-            for (uint64_t index = (firstUnmarked >> 1) + threadIdx.x * prime; index <= halfSize; index += blockDim.x * prime)
-                atomicAnd(&sieve[WORD_INDEX(index)], ~(sieve_t(1) << BIT_INDEX(index)));
-        }
-
-        __syncthreads();
-    }
-}
-
 __global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, uint64_t halfSize, uint32_t sizeSqrt, uint32_t maxBlockIndex, uint64_t blockSize, sieve_t *sieve)
 {
     // Calculate the start and end of the block we need to work on, at buffer word boundaries. 
@@ -60,11 +22,6 @@ __global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, u
     // If this is not the first block, we actually start at the beginning of the first block word
     if (blockIdx.x != 0)
         blockStart &= SIEVE_WORD_MASK;
-
-    #ifdef DEBUG
-    // printf("  - block %d: blockStart = %" PRIu64 " (index %" PRIu64 "), lastIndex = %" PRIu64 ".\n", blockIdx.x, blockStart, (blockStart >> 1), lastIndex);
-    printf("  - block %d: blockStart = %ld (index %ld), lastIndex = %ld.\n", blockIdx.x, blockStart, (blockStart >> 1), lastIndex);
-    #endif
 
     for (uint32_t primeIndex = 0; primeIndex < primeCount; primeIndex++)
     {
@@ -78,7 +35,6 @@ __global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, u
         if (!(firstUnmarked & 1))
             firstUnmarked += prime;
 
-        #if ROLLING_LIMIT > 0
         if (prime <= ROLLING_LIMIT)
         {
             uint64_t index = firstUnmarked >> 1;
@@ -116,14 +72,9 @@ __global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, u
         }
         else
         {
-        #endif // ROLLING_LIMIT > 0
-
             for (uint64_t index = firstUnmarked >> 1; index <= lastIndex; index += prime) 
                 sieve[WORD_INDEX(index)] &= ~(sieve_t(1) << BIT_INDEX(index));   // Clear the bit in the word that corresponds to the last part of the index 
-
-        #if ROLLING_LIMIT > 0
         }
-        #endif
     }
     
 }
@@ -137,56 +88,25 @@ class Sieve
     const uint64_t buffer_byte_size;
     sieve_t *device_sieve_buffer = nullptr;
 
-    void unmark_multiples(Parallelization type, uint32_t primeCount, uint32_t *primeList) 
+    void unmark_multiples(uint32_t primeCount, uint32_t *primeList) 
     {
-        // Unmark multiples on the GPU using the selected method
-        switch(type)
-        {
-            case Parallelization::threads:
-            {
-                // The number of threads we use is the maximum or the number of primes to process, whichever is lower
-                const uint32_t threadCount = min(MAX_THREADS, primeCount);
-
-                #ifdef DEBUG
-                printf("- starting thread multiple unmarking with %u threads.\n", threadCount);
-                #endif
-
-                unmark_multiples_threads<<<1, threadCount>>>(primeCount, primeList, half_size, size_sqrt, device_sieve_buffer);
-            }
-            break;
-
-            case Parallelization::blocks:
-            {
-                // Our workspace is the part of the sieve beyond the square root of its size...
-                const uint64_t sieveSpace = sieve_size - size_sqrt;
-                // ...which we halve and then divide by the word bit count to establish the number of words...
-                uint64_t wordCount = sieveSpace >> (WORD_SHIFT + 1);
-                // ...and increase that if the division left a remainder.
-                if (sieveSpace & SIEVE_BITS_MASK)
-                    wordCount++;
-                
-                // The number of blocks is the maximum thread count or the number of words, whichever is lower
-                const uint32_t blockCount = (uint32_t)min(uint64_t(MAX_THREADS), wordCount);
-                
-                uint64_t blockSize = sieveSpace / blockCount;
-                // Increase block size if the calculating division left a remainder
-                if (sieveSpace % blockCount)
-                    blockSize++;
-
-                #ifdef DEBUG
-                printf("- starting block multiple unmarking with blockCount %u and blockSize %zu.\n", blockCount, blockSize);
-                #endif
-
-                unmark_multiples_blocks<<<blockCount, 1>>>(primeCount, primeList, half_size, size_sqrt, blockCount - 1, blockSize, device_sieve_buffer);
-            }
-            break;
-
-            default:
-                // This is some method variation we don't know, so we warn and do nothing
-                fprintf(stderr, "WARNING: Parallelization type %d unknown, multiple unmarking skipped!\n\n", to_underlying(type));
-            break;
-        }
+        // Our workspace is the part of the sieve beyond the square root of its size...
+        const uint64_t sieveSpace = sieve_size - size_sqrt;
+        // ...which we halve and then divide by the word bit count to establish the number of words...
+        uint64_t wordCount = sieveSpace >> (WORD_SHIFT + 1);
+        // ...and increase that if the division left a remainder.
+        if (sieveSpace & SIEVE_BITS_MASK)
+            wordCount++;
         
+        // The number of blocks is the maximum thread count or the number of words, whichever is lower
+        const uint32_t blockCount = (uint32_t)min(uint64_t(MAX_THREADS), wordCount);
+        
+        uint64_t blockSize = sieveSpace / blockCount;
+        // Increase block size if the calculating division left a remainder
+        if (sieveSpace % blockCount)
+            blockSize++;
+
+        unmark_multiples_blocks<<<blockCount, 1>>>(primeCount, primeList, half_size, size_sqrt, blockCount - 1, blockSize, device_sieve_buffer);
     }
 
     public:
@@ -198,10 +118,6 @@ class Sieve
         buffer_word_size((half_size >> WORD_SHIFT) + 1),
         buffer_byte_size(buffer_word_size * BYTES_PER_WORD)
     {
-        #ifdef DEBUG
-        printf("- constructing sieve with buffer_word_size %zu and buffer_byte_size %zu.\n", buffer_word_size, buffer_byte_size);
-        #endif
-
         // Allocate the device sieve buffer
         cudaError_t result = cudaMallocManaged(&device_sieve_buffer, buffer_byte_size);
         if (cudaSuccess != result)
@@ -209,27 +125,8 @@ class Sieve
             fprintf(stderr, "Unable to alllocate %ld managed memory bytes, error=%08x, %s", buffer_byte_size, result, cudaGetErrorString(result));
             exit(0);
         }
+        cudaMemset(device_sieve_buffer, ~0, buffer_byte_size);
 
-        // The number of blocks is the maximum number of threads or the number of words in the buffer, whichever is lower
-        const uint32_t blockCount = (uint32_t)min(uint64_t(MAX_THREADS), buffer_word_size);
-        
-        uint64_t blockSize = buffer_word_size / blockCount;
-        // Increase block size if the calculating division left a remainder
-        if (buffer_word_size % blockCount)
-            blockSize++;
-
-        #ifdef DEBUG
-        printf("- initializing device buffer with blockCount %u and blockSize %zu.\n", blockCount, blockSize);
-        #endif
-
-        initialize_buffer<<<blockCount, 1>>>(blockSize, buffer_word_size, device_sieve_buffer);
-
-        // Make sure the initialization of the device sieve buffer has completed
-        cudaDeviceSynchronize();
-
-        #ifdef DEBUG
-        printf("- post buffer initialization device sync complete.\n");
-        #endif
     }
 
     ~Sieve() 
@@ -237,7 +134,7 @@ class Sieve
         cudaFree(device_sieve_buffer);
     }
 
-    sieve_t *run(Parallelization type = Parallelization::threads)
+    sieve_t *run()
     {
         // Calculate the size of the array we need to reserve for the primes we find up to and including the square root of
         //   the sieve size. x / (ln(x) - 1) is a good approximation, but often lower than the actual number, which would
@@ -273,7 +170,7 @@ class Sieve
         }
 
         // Use the GPU to unmark the rest of the primes multiples
-        unmark_multiples(type, primeCount, primeList);
+        unmark_multiples(primeCount, primeList);
 
         cudaFree(primeList);
 
@@ -318,6 +215,10 @@ class Sieve
     }
 };
 
+// resultsDictionary
+//
+// A table listing how many primes should be found up to a specific limit
+
 const std::map<uint64_t, const int> resultsDictionary =
 {
     {             10UL, 4         }, // Historical data for validating our results - the number of primes
@@ -330,12 +231,6 @@ const std::map<uint64_t, const int> resultsDictionary =
     {    100'000'000UL, 5761455   },
     {  1'000'000'000UL, 50847534  },
     { 10'000'000'000UL, 455052511 },
-};
-
-const std::map<Parallelization, const char *> parallelizationDictionary = 
-{
-    { Parallelization::threads, "threads" },
-    { Parallelization::blocks,  "blocks"  }
 };
 
 // Assumes any numerical first argument is the desired sieve size. Defaults to DEFAULT_SIEVE_SIZE.
@@ -355,69 +250,47 @@ uint64_t determineSieveSize(int argc, char *argv[])
     return sieveSize;
 }
 
-void printResults(Parallelization type, uint64_t sieveSize, uint64_t primeCount, double duration, uint64_t passes)
+void printResults(uint64_t sieveSize, uint64_t primeCount, double duration, uint64_t passes)
 {
     const auto expectedCount         = resultsDictionary.find(sieveSize);
     const auto countValidated        = expectedCount != resultsDictionary.end() && expectedCount->second == primeCount;
-    const auto parallelizationEntry  = parallelizationDictionary.find(type);
-    const char *parallelizationLabel = parallelizationEntry != parallelizationDictionary.end() ? parallelizationEntry->second : "unknown";
 
-    fprintf(stderr, "Passes: %zu, Time: %lf, Avg: %lf, Word size: %d, Max GPU threads: %d, Type: %s, Limit: %zu, Count: %zu, Validated: %d\n", 
+    fprintf(stderr, "Passes: %zu, Time: %lf, Avg: %lf, Word size: %d, Max GPU threads: %d, Limit: %zu, Count: %zu, Validated: %d\n", 
             passes,
             duration,
             duration / passes,
             BITS_PER_WORD,
             MAX_THREADS,
-            parallelizationLabel,
             sieveSize,
             primeCount,
             countValidated);
 
-    printf("rbergen_faithful_cuda_%s;%zu;%f;1;algorithm=base,faithful=yes,bits=1\n\n", parallelizationLabel, passes, duration);
+    printf("rbergen_faithful_cuda_shared;%zu;%f;1;algorithm=base,faithful=yes,bits=1\n\n", passes, duration);
 }
 
 int main(int argc, char *argv[])
 {
     const uint64_t sieveSize = determineSieveSize(argc, argv);
+    uint64_t passes = 0;
+    Sieve *sieve = nullptr;
 
-    Parallelization types[] = { Parallelization::blocks, Parallelization::threads };
+    const auto startTime = steady_clock::now();
+    duration<double, std::micro> runTime;
 
-    for (auto &type : types)
+    do
     {
-        uint64_t passes = 0;
-
-        Sieve *sieve = nullptr;
-
-        const auto startTime = steady_clock::now();
-        duration<double, std::micro> runTime;
-
-        #ifndef DEBUG
-        do
-        {
-        #endif
-
-            delete sieve;
-
-            sieve = new Sieve(sieveSize);
-            sieve->run(type);
-
-            passes++;
-
-            runTime = steady_clock::now() - startTime;
-
-        #ifndef DEBUG
-        }
-        while (duration_cast<seconds>(runTime).count() < 5);
-        #endif
-        
-        #ifdef DEBUG
-        printf("\n");
-        #endif
-
-        const size_t primeCount = sieve->count_primes();
-        
         delete sieve;
 
-        printResults(type, sieveSize, primeCount, duration_cast<microseconds>(runTime).count() / 1000000.0, passes); 
+        sieve = new Sieve(sieveSize);
+        sieve->run();
+
+        passes++;
+
+        runTime = steady_clock::now() - startTime;
     }
+    while (duration_cast<seconds>(runTime).count() < 5);
+    
+    const size_t primeCount = sieve->count_primes();
+    delete sieve;
+    printResults(sieveSize, primeCount, duration_cast<microseconds>(runTime).count() / 1000000.0, passes); 
 }
