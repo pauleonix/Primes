@@ -15,6 +15,9 @@
 #include <thread>
 #include <memory>
 
+#define USE_BLOCKS 1
+#define MIN_BLOCK  16384UL
+
 using namespace std;
 using namespace std::chrono;
 
@@ -55,7 +58,33 @@ public:
         return (x<<n) | (x>>(32-n));
     }
 
-    void setFlagsFalse(size_t n, size_t skip) {
+#if USE_BLOCKS
+    void setFlagsFalse(size_t n, size_t skip) 
+    {
+        const auto maxthreads = thread::hardware_concurrency();
+        auto blocksize = min(n / maxthreads, MIN_BLOCK);
+        vector<thread> threads;
+
+        for (int i = 0; i < blocksize; i++)
+        {
+            threads.push_back( thread([this](size_t start, size_t end, size_t skip)
+            {
+                auto n = ((start + skip - 1) / skip) * skip;                // Next aligned element within this block
+                auto rolling_mask = ~uint32_t(1 << n % 32);
+                auto roll_bits = skip % 32;
+                while (n < end) {
+                    array[index(n)] &= rolling_mask;
+                    n += skip;
+                    rolling_mask = rol(rolling_mask, roll_bits);
+                }
+            }, i * blocksize, min(arrSize, i * blocksize + blocksize), skip));
+        }
+        for (auto & thread: threads)
+            thread.join();
+    }
+#else
+    void setFlagsFalse(size_t n, size_t skip) 
+    {
         auto rolling_mask = ~uint32_t(1 << n % 32);
         auto roll_bits = skip % 32;
         while (n < arrSize) {
@@ -64,7 +93,8 @@ public:
             rolling_mask = rol(rolling_mask, roll_bits);
         }
     }
-    
+#endif
+
     inline size_t size() const {return arrSize;}
 };
 

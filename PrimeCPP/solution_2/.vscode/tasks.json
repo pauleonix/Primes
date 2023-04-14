@@ -1,17 +1,35 @@
 {
-    // See https://go.microsoft.com/fwlink/?LinkId=733558
-    // for the documentation about the tasks.json format
     "version": "2.0.0",
     "tasks": [
         {
-            "label": "echo",
+            "label": "build",
             "type": "shell",
-            "command": "./run.sh",
-            "problemMatcher": [],
+            "command": "clang++",
+            "args": [
+                "-g",
+                "-mtune=native",
+                "-pthread",
+                "-Ofast",
+                "-std=c++17",
+                "PrimeCPP_PAR.cpp",
+                "-o",
+                "primes_par.exe"
+            ],
             "group": {
                 "kind": "build",
                 "isDefault": true
-            }
+            },
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": false,
+                "panel": "shared",
+                "showReuseMessage": true,
+                "clear": false
+            },
+            "problemMatcher": [
+                "$gcc"
+            ]
         }
     ]
 }
