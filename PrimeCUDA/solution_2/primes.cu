@@ -11,17 +11,6 @@
 
 using namespace std::chrono;
 
-__global__ void initialize_buffer(uint64_t blockSize, uint64_t wordCount, sieve_t *sieve)
-{
-    const uint64_t startIndex = uint64_t(blockIdx.x) * blockSize;
-    // Don't initialize beyond the end of the buffer
-    const uint64_t endIndex = ullmin(startIndex + blockSize, wordCount);
-
-    // Set all block words to all 1s
-    for (uint64_t index = startIndex; index < endIndex; index++)
-        sieve[index] = MAX_WORD_VALUE;
-}
-
 __global__ void unmark_multiples_threads(uint32_t primeCount, uint32_t *primes, uint64_t halfSize, uint32_t sizeSqrt, sieve_t *sieve)
 {
     // We unmark every "MAX_THREADS"th prime's multiples, starting with our thread index
@@ -227,7 +216,8 @@ class Sieve
         printf("- initializing device buffer with blockCount %u and blockSize %zu.\n", blockCount, blockSize);
         #endif
 
-        initialize_buffer<<<blockCount, 1>>>(blockSize, buffer_word_size, device_sieve_buffer);
+        // async like kernel launch
+        cudaMemset(device_sieve_buffer, 255, buffer_byte_size);
 
         // Allocate host sieve buffer (odd numbers only) and initialize the bytes up to the square root of the sieve 
         //   size to all 1s.
