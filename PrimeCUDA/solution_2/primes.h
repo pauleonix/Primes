@@ -59,3 +59,17 @@ constexpr auto to_underlying(TEnum enumValue)
 {
    return static_cast<typename std::underlying_type<TEnum>::type>(enumValue);
 }
+
+#ifdef DEBUG
+inline void assertCUDA(cudaError_t code, const char *file, int line) noexcept
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr, "CUDART %d: %s (%s:%d):\n\t%s\n", (int)code, cudaGetErrorName(code), file, line, cudaGetErrorString(code));
+        exit(code);
+    }
+}
+#define checkCUDA(status) assertCUDA((status), __FILE__, __LINE__)
+#else
+#define checkCUDA(ans) ans
+#endif

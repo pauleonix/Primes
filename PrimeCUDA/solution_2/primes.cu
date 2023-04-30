@@ -124,11 +124,11 @@ class Sieve
     void unmark_multiples(Parallelization type, uint32_t primeCount, uint32_t *primeList) 
     {
         // Copy the first (square root of sieve size) buffer bytes to the device
-        cudaMemcpy(device_sieve_buffer, host_sieve_buffer, (size_sqrt >> 4) + 1, cudaMemcpyHostToDevice);
+        checkCUDA(cudaMemcpy(device_sieve_buffer, host_sieve_buffer, (size_sqrt >> 4) + 1, cudaMemcpyHostToDevice));
         // Allocate device buffer for the list of primes and copy the prime list to it
         uint32_t *devicePrimeList;
-        cudaMalloc(&devicePrimeList, primeCount * sizeof(uint32_t));
-        cudaMemcpy(devicePrimeList, primeList, primeCount << 2, cudaMemcpyHostToDevice);
+        checkCUDA(cudaMalloc(&devicePrimeList, primeCount * sizeof(uint32_t)));
+        checkCUDA(cudaMemcpy(devicePrimeList, primeList, primeCount << 2, cudaMemcpyHostToDevice));
 
         // Unmark multiples on the GPU using the selected method
         switch(type)
@@ -143,6 +143,7 @@ class Sieve
                 #endif
 
                 unmark_multiples_threads<<<1, threadCount>>>(primeCount, devicePrimeList, half_size, size_sqrt, device_sieve_buffer);
+                checkCUDA(cudaGetLastError());
             }
             break;
 
@@ -169,6 +170,7 @@ class Sieve
                 #endif
 
                 unmark_multiples_blocks<<<blockCount, 1>>>(primeCount, devicePrimeList, half_size, size_sqrt, blockCount - 1, blockSize, device_sieve_buffer);
+                checkCUDA(cudaGetLastError());
             }
             break;
 
@@ -179,10 +181,10 @@ class Sieve
         }
         
         // Release the device prime list buffer
-        cudaFree(devicePrimeList);
+        checkCUDA(cudaFree(devicePrimeList));
 
         // Copy the sieve buffer from the device to the host. This function implies a wait for all GPU threads to finish.
-        cudaMemcpy(host_sieve_buffer, device_sieve_buffer, buffer_byte_size, cudaMemcpyDeviceToHost);
+        checkCUDA(cudaMemcpy(host_sieve_buffer, device_sieve_buffer, buffer_byte_size, cudaMemcpyDeviceToHost));
         
         #ifdef DEBUG
         printf("- device to host copy of sieve buffer complete.\n");
@@ -203,7 +205,7 @@ class Sieve
         #endif
 
         // Allocate the device sieve buffer
-        cudaMalloc(&device_sieve_buffer, buffer_byte_size);
+        checkCUDA(cudaMalloc(&device_sieve_buffer, buffer_byte_size));
 
         // The number of blocks is the maximum number of threads or the number of words in the buffer, whichever is lower
         const uint32_t blockCount = (uint32_t)min(uint64_t(MAX_THREADS), buffer_word_size);
@@ -218,7 +220,7 @@ class Sieve
         #endif
 
         // async like kernel launch
-        cudaMemset(device_sieve_buffer, 255, buffer_byte_size);
+        checkCUDA(cudaMemset(device_sieve_buffer, 255, buffer_byte_size));
 
         // Allocate host sieve buffer (odd numbers only) and initialize the bytes up to the square root of the sieve 
         //   size to all 1s.
@@ -226,7 +228,7 @@ class Sieve
         memset(host_sieve_buffer, 255, (size_sqrt >> 4) + 1);
 
         // Make sure the initialization of the device sieve buffer has completed
-        cudaDeviceSynchronize();
+        checkCUDA(cudaDeviceSynchronize());
 
         #ifdef DEBUG
         printf("- post buffer initialization device sync complete.\n");
@@ -235,7 +237,7 @@ class Sieve
 
     ~Sieve() 
     {
-        cudaFree(device_sieve_buffer);
+        checkCUDA(cudaFree(device_sieve_buffer));
         free(host_sieve_buffer);
     }
 
