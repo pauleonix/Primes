@@ -194,7 +194,7 @@ class Sieve
     Sieve(unsigned long size) :
         sieve_size(size),
         half_size(size >> 1),
-        size_sqrt((uint32_t)sqrt(size) + 1),
+        size_sqrt((uint32_t)sqrt(size)),
         buffer_word_size((half_size >> WORD_SHIFT) + 1),
         buffer_byte_size(buffer_word_size * BYTES_PER_WORD)
     {
