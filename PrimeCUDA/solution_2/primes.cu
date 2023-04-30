@@ -27,19 +27,19 @@ __global__ void unmark_multiples_threads(uint32_t primeCount, uint32_t *primes, 
         if (!(firstUnmarked & 1))
             firstUnmarked += prime;
 
-        for (uint64_t index = firstUnmarked >> 1; index <= halfSize; index += prime) 
+        for (uint64_t index = firstUnmarked >> 1; index < halfSize; index += prime) 
             // Clear the bit in the word that corresponds to the last part of the index 
             atomicAnd(&sieve[WORD_INDEX(index)], ~(sieve_t(1) << BIT_INDEX(index)));
     }
 }
 
-__global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, uint64_t halfSize, uint32_t sizeSqrt, uint32_t maxBlockIndex, uint64_t blockSize, sieve_t *sieve)
+__global__ void unmark_multiples_blocks(uint32_t primeCount, uint32_t *primes, uint64_t halfSize, uint32_t sizeSqrt, uint64_t blockSize, sieve_t *sieve)
 {
     // Calculate the start and end of the block we need to work on, at buffer word boundaries. 
     //   Note that the first variable is a number in sieve space...
     uint64_t blockStart = uint64_t(blockIdx.x) * blockSize + sizeSqrt;
     //   ...and the second is an index in the sieve buffer (representing odd numbers only)
-    const uint64_t lastIndex = (blockIdx.x == maxBlockIndex) ? halfSize : (((blockStart + blockSize) & SIEVE_WORD_MASK) >> 1) - 1;
+    const uint64_t lastIndex = (blockIdx.x == gridDim.x - 1) ? (halfSize - 1) : min(halfSize - 1, (((blockStart + blockSize) & SIEVE_WORD_MASK) >> 1) - 1);
 
     // If this is not the first block, we actually start at the beginning of the first block word
     if (blockIdx.x != 0)
@@ -160,16 +160,14 @@ class Sieve
                 // The number of blocks is the maximum thread count or the number of words, whichever is lower
                 const uint32_t blockCount = (uint32_t)min(uint64_t(MAX_THREADS), wordCount);
                 
-                uint64_t blockSize = sieveSpace / blockCount;
-                // Increase block size if the calculating division left a remainder
-                if (sieveSpace % blockCount)
-                    blockSize++;
+                // Make sure to get a multiple of 2 * BITS_PER_WORD to make it easier to reason about.
+                uint64_t blockSize = ((sieveSpace + blockCount - 1) / blockCount + 2 * BITS_PER_WORD - 1) & SIEVE_WORD_MASK;
 
                 #ifdef DEBUG
                 printf("- starting block multiple unmarking with blockCount %u and blockSize %zu.\n", blockCount, blockSize);
                 #endif
 
-                unmark_multiples_blocks<<<blockCount, 1>>>(primeCount, devicePrimeList, half_size, size_sqrt, blockCount - 1, blockSize, device_sieve_buffer);
+                unmark_multiples_blocks<<<blockCount, 1>>>(primeCount, devicePrimeList, half_size, size_sqrt, blockSize, device_sieve_buffer);
                 checkCUDA(cudaGetLastError());
             }
             break;
@@ -300,8 +298,8 @@ class Sieve
 
         // For the last word, only count bits up to the (halved) sieve limit
         word = host_sieve_buffer[lastWord];
-        const uint32_t lastBit = BIT_INDEX(half_size);
-        for (uint32_t index = 0; word && index <= lastBit; index++) 
+        const uint32_t endBit = BIT_INDEX(half_size);
+        for (uint32_t index = 0; word && index < endBit; index++) 
         {
             if (word & 1)
                 primeCount++;
