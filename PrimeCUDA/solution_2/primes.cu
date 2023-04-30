@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cmath>
+#include <cinttypes>
 #include <algorithm>
 #include <chrono>
 #include <map>
